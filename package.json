@@ -1,0 +1,17 @@
+{
+  "name": "kizamubeam-plugins",
+  "version": "0.1.0",
+  "description": "Official and community plugins (generators, tools) for KizamuBeam",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pack": "node scripts/plugin-pack.mjs --build",
+    "validate": "node scripts/validate.mjs",
+    "test": "npm run validate"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5",
+    "typescript": "^5.9.3"
+  }
+}
