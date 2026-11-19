@@ -10,7 +10,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-kzb-plugin = { path = "../sdk/rust" }
+kzb-plugin = { path = "../../sdk/rust" }
 serde = { version = "1", features = ["derive"] }
 
 [profile.release]

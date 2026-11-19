@@ -1,7 +1,7 @@
 // Chessboard and game board generator (#309): n × m squares, dark squares as outlines (to fill), hatch, crosses or a
 // small checkerboard, coordinates on the border, and the board outline to cut. Squares, patterns and coordinates
 // are engraved (part marks); the outline is cut.
-import { definePlugin, mm, roundedRect, strokeText, textWidth, type Issue, type SubPath } from '../../sdk/ts';
+import { definePlugin, mm, roundedRect, strokeText, textWidth, type Issue, type SubPath } from '../../../sdk/ts';
 
 interface P {
   [k: string]: number | string | boolean;

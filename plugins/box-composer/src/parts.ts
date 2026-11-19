@@ -4,7 +4,7 @@
 // Box: outer size W × D × H, material t. The inner rectangle (where the walls are placed) lies t inside the outer
 // edge. Outer walls, floor and lid are the panels of the box generator. Inner walls stand on the floor; a wall panel
 // is drawn in its own plane: x along the wall from its physical start, y down from its top edge to the floor (h).
-import { host, type JointOptions, type SubPath } from '../../sdk/ts';
+import { host, type JointOptions, type SubPath } from '../../../sdk/ts';
 import { joint, panel, tenonsInto, widen, JointError, type Parts } from './joints';
 import type { End, Model, Side, WallInfo } from './model';
 

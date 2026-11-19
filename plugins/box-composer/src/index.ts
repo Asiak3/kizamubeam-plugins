@@ -2,7 +2,7 @@
 // Experimental (pack version 0.x). All wood joints come from the app through host.joints.
 // Build: node scripts/plugin-pack.mjs --build plugins/box-composer
 // Check: npm run plugin:check plugins/box-composer
-import { definePlugin, host, mm, type Issue, type Part, type SubPath, type Text } from '../../sdk/ts';
+import { definePlugin, host, mm, type Issue, type Part, type SubPath, type Text } from '../../../sdk/ts';
 import { JointError } from './joints';
 import { buildModel, readLayout, type Model } from './model';
 import { buildParts, innerHeight, poses, withKerf, type Dims } from './parts';
