@@ -31,7 +31,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,7 +38,7 @@ jobs:
 
       - name: Build and validate plugins
         run: |
-          npm ci
+          npm install
           npm test
 
       - name: Build and sign catalog
