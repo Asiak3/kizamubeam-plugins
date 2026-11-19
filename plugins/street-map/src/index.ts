@@ -5,7 +5,7 @@
 // plate, or the other way round (invert: the background is engraved, the streets stay). Roads can also be single
 // lines for a score layer. Coordinates are mm, y down; the map is a local equirectangular projection around the
 // centre, exact enough for a few kilometres.
-import { circle, definePlugin, host, rect, type Issue, type NetResponse, type Params, type SubPath } from '../../sdk/ts';
+import { circle, definePlugin, host, rect, type Issue, type NetResponse, type Params, type SubPath } from '../../../sdk/ts';
 
 interface P extends Params {
   query: string;

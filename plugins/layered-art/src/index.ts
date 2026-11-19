@@ -5,7 +5,7 @@
 // removed by the cutting rules (mm), the outlines are traced by the app (host function trace) as Bézier curves.
 // Each plate gets the outline of the plate above as a score mark and its gluing number; the 3D view stacks them.
 // Coordinates are mm, y down; plate 1 is the back plate.
-import { definePlugin, host, pixels, regionMap, storedImage, strokeText, type Issue, type Params, type Part, type Pose, type SubPath, type Text } from '../../sdk/ts';
+import { definePlugin, host, pixels, regionMap, storedImage, strokeText, type Issue, type Params, type Part, type Pose, type SubPath, type Text } from '../../../sdk/ts';
 
 interface P extends Params {
   photo: string;

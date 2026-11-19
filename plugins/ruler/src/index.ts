@@ -1,6 +1,6 @@
 // Ruler, protractor and scale dial generator (#308). The outline is cut, ticks and numbers are engraved as open
 // lines (part marks) and sit exactly at their nominal positions, so the scale can be used for measuring.
-import { circle, definePlugin, mm, roundedRect, strokeText, textWidth, type Issue, type Node, type SubPath } from '../../sdk/ts';
+import { circle, definePlugin, mm, roundedRect, strokeText, textWidth, type Issue, type Node, type SubPath } from '../../../sdk/ts';
 
 interface P {
   [k: string]: number | string | boolean;

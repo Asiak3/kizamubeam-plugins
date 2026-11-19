@@ -1,6 +1,6 @@
 // Wood joints of the box composer, all through the app's host function joints (#398): no joint geometry of its own.
 // A wall panel is drawn in its own plane: x along the wall, y down from the top edge (0) to the floor side (h).
-import { host, type JointOptions, type SubPath } from '../../sdk/ts';
+import { host, type JointOptions, type SubPath } from '../../../sdk/ts';
 
 export interface Pt {
   x: number;

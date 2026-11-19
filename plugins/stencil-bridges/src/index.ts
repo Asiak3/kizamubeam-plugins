@@ -3,7 +3,7 @@
 // through the stroke around each island, so it stays connected to the sheet. Shapes are read by the even-odd rule
 // (as the app cuts them); the bridges are subtracted with the app's boolean operation, so the result is closed
 // paths again. Coordinates are mm, y down.
-import { definePathTool, host, type Issue, type Node, type Pt, type SubPath, type Text } from '../../sdk/ts';
+import { definePathTool, host, type Issue, type Node, type Pt, type SubPath, type Text } from '../../../sdk/ts';
 
 interface P {
   [k: string]: number | string | boolean;

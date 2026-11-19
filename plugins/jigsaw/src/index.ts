@@ -1,7 +1,7 @@
 // Jigsaw puzzle generator (#307): a grid of interlocking pieces, one cut line per grid line so no edge is cut
 // twice, an outer border with optional rounded corners, an optional frame and piece numbers to engrave.
 // The same seed always gives the same puzzle.
-import { definePlugin, mm, random, roundedRect, strokeText, type Issue, type Node, type Part, type SubPath } from '../../sdk/ts';
+import { definePlugin, mm, random, roundedRect, strokeText, type Issue, type Node, type Part, type SubPath } from '../../../sdk/ts';
 
 interface P {
   [k: string]: number | string | boolean;
