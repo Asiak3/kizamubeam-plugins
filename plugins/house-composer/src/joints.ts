@@ -14,7 +14,7 @@ export class JointError extends Error {
   }
 }
 
-const EPS = 1e-6;
+const EPS = 5e-3;
 const same = (p: Pt, q: Pt) => Math.abs(p.x - q.x) < EPS && Math.abs(p.y - q.y) < EPS;
 
 /**

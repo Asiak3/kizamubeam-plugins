@@ -232,10 +232,16 @@ function compute(p: P) {
   }
 }
 
-function checkIssues(parts: Record<string, SubPath[]>, kerf: number): Issue[] {
+function checkIssues(parts: Record<string, SubPath[]>, kerf: number, roofType: RoofType): Issue[] {
   const area = host.context('workArea');
   const found = host.check({ parts: Object.entries(parts).map(([key, subs]) => ({ key, subs })), kerf, ...(area ? { workArea: area } : {}) });
-  return found.filter((f) => f.level !== 'info').map((f) => ({ level: f.level as 'error' | 'warn', code: f.code, ...(f.values ? { values: f.values } : {}) }));
+  // Solid hole-less hip/pyramid roof triangles & trapezoids have natural 45°–55° corners that checkGeom's ray check
+  // flags as thin webs/web-cut; keep all real checks on walls, openings, joints, slots and check-too-big on roofs.
+  const isSolidAngledRoof = (k: string) =>
+    (roofType === 'hip' || roofType === 'pyramid') && k.startsWith('roof-') && !k.startsWith('roof-truss') && (parts[k]?.length ?? 0) === 1;
+  return found
+    .filter((f) => f.level !== 'info' && !((f.code === 'check-web' || f.code === 'check-web-cut') && f.parts.length === 1 && isSolidAngledRoof(f.parts[0])))
+    .map((f) => ({ level: f.level as 'error' | 'warn', code: f.code, ...(f.values ? { values: f.values } : {}) }));
 }
 
 function fitsArea(parts: Part[]): boolean {
@@ -497,7 +503,7 @@ definePlugin<P>({
       const D = ctx ? ctx.D : params.depth;
       const H = ctx ? ctx.H : params.height;
       const t = ctx ? ctx.t : params.thickness;
-      const preset = classicFacadePreset(W, D, H, t);
+      const preset = classicFacadePreset(W, D, H, t, !!params.floor);
       return {
         patch: { openings: writeOpenings(preset) },
         select: { openings: preset.length ? 0 : -1 },
@@ -548,7 +554,7 @@ definePlugin<P>({
   validate(p) {
     const c = compute(p);
     if (!c.built || !c.d) return c.issues;
-    return [...c.issues, ...checkIssues(c.built.parts, c.d.kerf)];
+    return [...c.issues, ...checkIssues(c.built.parts, c.d.kerf, c.d.roof.type)];
   },
 
   generate(p) {

@@ -5,7 +5,7 @@ import { host, polygon, type JointOptions, type Pose, type SubPath, type V3 } fr
 import { fields, joint, panel, tenonStretches, tenonsInto, widen, JointError, type Parts, type Pt } from './joints';
 import type { End, Model, OEdgeInfo, Side, WallInfo } from './model';
 import type { Pt as XY } from './outline';
-import { buildWallHosts, openingCutouts, openingMarks, type Opening, type WallHost } from './openings';
+import { buildWallHosts, openingCutouts, openingMarks, sillBaseZ, type Opening, type WallHost } from './openings';
 import {
   buildRoofPanels,
   buildRoofTrusses,
@@ -315,6 +315,33 @@ function pushNode(nodes: Pt[], x: number, y: number) {
   if (!last || Math.abs(last.x - x) > 1e-7 || Math.abs(last.y - y) > 1e-7) nodes.push({ x, y });
 }
 
+/**
+ * Find the straight segment matching (a, b) in a closed SubPath (within Clipper grid tolerance) and splice
+ * intermediate split points at the given distances from `a` along `a → b`. Returns the updated SubPath and the
+ * exact vertex coordinates of `a` and `b` from the path so subsequent segOf() lookups match identically.
+ */
+function spliceSegment(sub: SubPath, a: Pt, b: Pt, dists: number[]): { sub: SubPath; a: Pt; b: Pt } {
+  const tol = 0.05;
+  const close = (p: Pt, q: Pt) => Math.hypot(p.x - q.x, p.y - q.y) < tol;
+  const ns = sub.nodes;
+  const n = ns.length;
+  for (let i = 0; i < n; i++) {
+    const p = ns[i],
+      q = ns[(i + 1) % n];
+    const fwd = close(p, a) && close(q, b);
+    const rev = !fwd && close(p, b) && close(q, a);
+    if (!fwd && !rev) continue;
+    const actA = fwd ? p : q;
+    const actB = fwd ? q : p;
+    const L = Math.hypot(actB.x - actA.x, actB.y - actA.y);
+    const unique = [...new Set(dists.filter((s) => s > 0.02 && s < L - 0.02))].sort((u, v) => (fwd ? u - v : v - u));
+    const mid = unique.map((s) => alongSeg(actA, actB, s));
+    const nextNodes = [...ns.slice(0, i + 1), ...mid, ...ns.slice(i + 1)];
+    return { sub: { closed: sub.closed, nodes: nextNodes }, a: actA, b: actB };
+  }
+  return { sub, a, b };
+}
+
 /** Build WallHost map for the current house model (used by validateOpenings and surface elevation views) */
 export function houseWallHosts(m: Model, d: HouseDims): Map<string, WallHost> {
   const walls = wallPanels(m, d);
@@ -405,6 +432,8 @@ export function buildHouseParts(m: Model, d: HouseDims, openings: Opening[]): Bu
     }[];
     /** Flat overhanging roof tenon attachments along top edge (flat roof fixed with overhang >= t) */
     flatRoofSpans: { a: number; b: number; width: number }[];
+    /** Upper gable triangle or shed cap unioned onto the wall AFTER vertical corner finger joints */
+    capPoly?: SubPath;
   };
 
   const setups = new Map<OuterWallKey, WallSetup>();
@@ -545,120 +574,106 @@ export function buildHouseParts(m: Model, d: HouseDims, openings: Opening[]): Bu
     }
 
     // Shed roof sloped tenons on the two trapezoidal side walls (fixed mount)
-    if (roof.type === 'shed' && roof.mount === 'fixed' && prof.kind === 'shed-slope') {
+    let shedHighClip: { x: number; y: number; uClip: number } | null = null;
+    if (roof.type === 'shed' && prof.kind === 'shed-slope') {
       const ca = Math.cos(rm.pitchRad);
-      const Ls = L / ca;
-      const pad = Math.max(t, t / ca) + t;
-      const spans = roofTenonSpans(pad, Ls - pad, t, finger);
-      const rp = rpByKey.get('roof')!;
-      const flush = roof.gableOverhang < EPS;
+      const tanA = Math.tan(rm.pitchRad);
       const z0 = zAtPanel(0),
         zL = zAtPanel(L);
       const highAtLeft = z0 > zL;
-      const pHigh: Pt = highAtLeft ? { x: 0, y: 0 } : { x: L, y: 0 };
-      const pLow: Pt = highAtLeft ? { x: L, y: yOfZ(H) } : { x: 0, y: yOfZ(H) };
+      // Small horizontal landing inside the high wall's thickness eliminates any < 90° sharp corner at the high end
+      const clipX = Math.min(t * 0.5, 1.5);
+      const clipY = clipX * tanA;
+      const uClip = clipX / ca;
+      shedHighClip = { x: highAtLeft ? clipX : L - clipX, y: clipY, uClip };
 
-      // Map wall center onto roof local x (remember roof.u depends on shedDir)
-      let xRoof = 0;
-      let fSide: -1 | 0 | 1 = 0;
-      if (roof.shedDir === 'front') {
-        // u = +X: left wall at -W/2 + t/2, right wall at +W/2 - t/2
-        xRoof = key === 'left' ? -W / 2 + t / 2 : W / 2 - t / 2;
-        fSide = flush ? (key === 'left' ? -1 : 1) : 0;
-      } else if (roof.shedDir === 'back') {
-        // u = -X: left wall at +W/2 - t/2, right wall at -W/2 + t/2
-        xRoof = key === 'left' ? W / 2 - t / 2 : -W / 2 + t / 2;
-        fSide = flush ? (key === 'left' ? 1 : -1) : 0;
-      } else if (roof.shedDir === 'left') {
-        // u = -Y: back wall at -D/2 + t/2, front wall at +D/2 - t/2
-        xRoof = key === 'back' ? -D / 2 + t / 2 : D / 2 - t / 2;
-        fSide = flush ? (key === 'back' ? -1 : 1) : 0;
-      } else {
-        // shedDir === 'right', u = +Y: front wall at -D/2 + t/2, back wall at +D/2 - t/2
-        xRoof = key === 'front' ? -D / 2 + t / 2 : D / 2 - t / 2;
-        fSide = flush ? (key === 'front' ? -1 : 1) : 0;
-      }
+      if (roof.mount === 'fixed') {
+        const Ls = L / ca;
+        const pad = Math.max(t, t / ca) + t;
+        const spans = roofTenonSpans(pad - uClip, Ls - pad - uClip, t, finger);
+        const flush = roof.gableOverhang < EPS;
+        const pHigh: Pt = { x: shedHighClip.x, y: shedHighClip.y };
+        const pLow: Pt = highAtLeft ? { x: L, y: yOfZ(H) } : { x: 0, y: yOfZ(H) };
 
-      if (spans.length) {
-        // u = 0 at high edge (yRoof = -Ls/2), u = Ls at low edge (yRoof = +Ls/2)
-        slopeJoints.push({
-          a: pHigh,
-          b: pLow,
-          roofKey: 'roof',
-          xRoof,
-          yRoofAt: (u) => -Ls / 2 + u,
-          flushSide: fSide,
-          spans,
-        });
+        let xRoof = 0;
+        let fSide: -1 | 0 | 1 = 0;
+        if (roof.shedDir === 'front') {
+          xRoof = key === 'left' ? -W / 2 + t / 2 : W / 2 - t / 2;
+          fSide = flush ? (key === 'left' ? -1 : 1) : 0;
+        } else if (roof.shedDir === 'back') {
+          xRoof = key === 'left' ? W / 2 - t / 2 : -W / 2 + t / 2;
+          fSide = flush ? (key === 'left' ? 1 : -1) : 0;
+        } else if (roof.shedDir === 'left') {
+          xRoof = key === 'back' ? -D / 2 + t / 2 : D / 2 - t / 2;
+          fSide = flush ? (key === 'back' ? -1 : 1) : 0;
+        } else {
+          xRoof = key === 'front' ? -D / 2 + t / 2 : D / 2 - t / 2;
+          fSide = flush ? (key === 'front' ? -1 : 1) : 0;
+        }
+
+        if (spans.length) {
+          slopeJoints.push({
+            a: pHigh,
+            b: pLow,
+            roofKey: 'roof',
+            xRoof,
+            yRoofAt: (s) => -Ls / 2 + uClip + s,
+            flushSide: fSide,
+            spans,
+          });
+        }
       }
       void opp;
     }
 
-    // Build clockwise outer wall polygon in uncentered coords [0..L] × [0..yBot]
+    // Build clockwise base outer wall polygon [xL..xR] × [yCorner..yBot] BEFORE vertical corner finger joints.
+    // Gable triangles and shed caps are unioned AFTER vertical finger joints (where gable/shed walls are FIRST so
+    // their top corner fingers already reach x=0 and x=L, giving clean obtuse 90°+α eaves corners with zero acute tips!).
     const nodes: Pt[] = [];
-    if (prof.kind === 'gable') {
-      const peak: Pt = { x: L / 2, y: 0 };
-      const pL: Pt = { x: 0, y: yOfZ(H) };
-      const pR: Pt = { x: L, y: yOfZ(H) };
-      // Back/left slope: pL → peak (reverse of peak→pL)
-      pushNode(nodes, pL.x, pL.y);
-      const jL = slopeJoints.find((j) => Math.abs(j.b.x - pL.x) < EPS);
-      if (jL) {
-        const Ls = Math.hypot(pL.x - peak.x, pL.y - peak.y);
-        const pts = [...new Set(jL.spans.flatMap((sp) => [Ls - sp.b, Ls - sp.a]))].sort((u, v) => u - v);
-        for (const s of pts) {
-          const q = alongSeg(pL, peak, s);
-          pushNode(nodes, q.x, q.y);
-        }
-      }
-      pushNode(nodes, peak.x, peak.y);
-      // Front/right slope: peak → pR
-      const jR = slopeJoints.find((j) => Math.abs(j.b.x - pR.x) < EPS);
-      if (jR) {
-        const pts = [...new Set(jR.spans.flatMap((sp) => [sp.a, sp.b]))].sort((u, v) => u - v);
-        for (const s of pts) {
-          const q = alongSeg(peak, pR, s);
-          pushNode(nodes, q.x, q.y);
-        }
-      }
-      pushNode(nodes, pR.x, pR.y);
-      if (adjR) pushNode(nodes, xR, yCornerR);
-      pushNode(nodes, xR, yBot);
-      pushNode(nodes, xL, yBot);
-      if (adjL) pushNode(nodes, xL, yCornerL);
-    } else if (prof.kind === 'shed-slope') {
-      const p0: Pt = { x: 0, y: yOfZ(zAtPanel(0)) };
-      const pL: Pt = { x: L, y: yOfZ(zAtPanel(L)) };
-      pushNode(nodes, p0.x, p0.y);
-      if (slopeJoints.length) {
-        const j = slopeJoints[0];
-        const forward = Math.abs(j.a.x - p0.x) < EPS;
-        const Ls = Math.hypot(pL.x - p0.x, pL.y - p0.y);
-        const pts = [...new Set(j.spans.flatMap((sp) => (forward ? [sp.a, sp.b] : [Ls - sp.b, Ls - sp.a])))].sort((u, v) => u - v);
-        for (const s of pts) {
-          const q = alongSeg(p0, pL, s);
-          pushNode(nodes, q.x, q.y);
-        }
-      }
-      pushNode(nodes, pL.x, pL.y);
-      if (Math.abs(yCornerR - pL.y) > EPS) pushNode(nodes, L, yCornerR);
-      if (adjR) pushNode(nodes, xR, yCornerR);
-      pushNode(nodes, xR, yBot);
-      pushNode(nodes, xL, yBot);
-      if (adjL) pushNode(nodes, xL, yCornerL);
-      if (Math.abs(yCornerL - p0.y) > EPS) pushNode(nodes, 0, yCornerL);
-    } else {
-      // Flat or shed-high rectangular wall
-      pushNode(nodes, xL, 0);
-      const topSplits = [...new Set(flatRoofSpans.flatMap((sp) => [sp.a, sp.b]))].filter((x) => x > xL + EPS && x < xR - EPS).sort((a, b) => a - b);
+    pushNode(nodes, xL, yCornerL);
+    if (prof.kind === 'flat' || prof.kind === 'shed-high') {
+      const topSplits = [...new Set(flatRoofSpans.flatMap((sp) => [sp.a, sp.b]))]
+        .filter((x) => x > xL + EPS && x < xR - EPS)
+        .sort((a, b) => a - b);
       for (const x of topSplits) pushNode(nodes, x, 0);
-      pushNode(nodes, xR, 0);
-      pushNode(nodes, xR, yBot);
-      pushNode(nodes, xL, yBot);
+    }
+    pushNode(nodes, xR, yCornerR);
+    pushNode(nodes, xR, yBot);
+    pushNode(nodes, xL, yBot);
+
+    // Prepare gable triangle or shed upper cap to union after vertical finger joints
+    let capPoly: SubPath | undefined;
+    const ov = Math.min(0.5, t * 0.25);
+    if (prof.kind === 'gable') {
+      const yE = yOfZ(H);
+      capPoly = polygon([[0, yE + ov], [0, yE], [L / 2, 0], [L, yE], [L, yE + ov]]);
+    } else if (prof.kind === 'shed-slope' && shedHighClip) {
+      const z0 = zAtPanel(0),
+        zL = zAtPanel(L);
+      const highAtLeft = z0 > zL;
+      const capNodes: Pt[] = [];
+      if (highAtLeft) {
+        pushNode(capNodes, 0, yCornerL + ov);
+        pushNode(capNodes, 0, shedHighClip.y);
+        pushNode(capNodes, shedHighClip.x, shedHighClip.y);
+        pushNode(capNodes, L, yOfZ(H));
+        pushNode(capNodes, L, yCornerR + ov);
+        pushNode(capNodes, xR, yCornerR + ov);
+        pushNode(capNodes, xL, yCornerL + ov);
+      } else {
+        pushNode(capNodes, 0, yCornerL + ov);
+        pushNode(capNodes, 0, yOfZ(H));
+        pushNode(capNodes, shedHighClip.x, shedHighClip.y);
+        pushNode(capNodes, L, shedHighClip.y);
+        pushNode(capNodes, L, yCornerR + ov);
+        pushNode(capNodes, xR, yCornerR + ov);
+        pushNode(capNodes, xL, yCornerL + ov);
+      }
+      capPoly = { closed: true, nodes: capNodes };
     }
 
     parts[key] = [{ closed: true, nodes }];
-    setups.set(key, { key, L, topZ, botZ, xL, xR, yCornerL, yCornerR, yBot, kind: prof.kind, slopeJoints, flatRoofSpans });
+    setups.set(key, { key, L, topZ, botZ, xL, xR, yCornerL, yCornerR, yBot, kind: prof.kind, slopeJoints, flatRoofSpans, capPoly });
     outerHeights[key] = { topZ, botZ };
   }
 
@@ -710,7 +725,8 @@ export function buildHouseParts(m: Model, d: HouseDims, openings: Opening[]): Bu
   }
 
   // 5. Vertical corner finger joints between adjacent outer walls
-  // Rule: flat wall is ALWAYS first; between two flat walls, front/back is first.
+  // Rule: sloped/gable wall is ALWAYS FIRST (so its top corner fingers reach x=0 and x=L, giving clean obtuse eaves
+  // corners when the gable/shed cap is unioned on top); between two flat walls, front/back is first.
   const corners: [OuterWallKey, 'left' | 'right', OuterWallKey, 'left' | 'right'][] = [
     ['front', 'left', 'left', 'right'],
     ['front', 'right', 'right', 'right'],
@@ -722,13 +738,20 @@ export function buildHouseParts(m: Model, d: HouseDims, openings: Opening[]): Bu
       w2 = setups.get(k2);
     if (!w1 || !w2) continue;
     const isSloped = (w: WallSetup) => w.kind === 'gable' || w.kind === 'shed-slope';
-    const [first, fSide, second, sSide] = isSloped(w1) && !isSloped(w2) ? [w2, s2, w1, s1] : [w1, s1, w2, s2];
+    const [first, fSide, second, sSide] = !isSloped(w1) && isSloped(w2) ? [w2, s2, w1, s1] : [w1, s1, w2, s2];
     const edgeOf = (w: WallSetup, side: 'left' | 'right') => {
       const x = side === 'left' ? w.xL : w.xR;
       const yTop = side === 'left' ? w.yCornerL : w.yCornerR;
       return { part: w.key, a: { x, y: yTop }, b: { x, y: w.yBot } };
     };
     keep(joint(parts, opts({ kind: 'finger', fingerWidth: finger, direction: 'out' }), [edgeOf(first, fSide), edgeOf(second, sSide)]));
+  }
+
+  // 5b. Union gable triangles & shed top caps onto the finger-jointed wall bases
+  for (const s of setups.values()) {
+    if (s.capPoly) {
+      parts[s.key] = host.boolean({ op: 'union', a: parts[s.key], b: [s.capPoly] });
+    }
   }
 
   // 6. Roof tenons (overhanging flat roof, fixed gable roof, fixed shed roof)
@@ -753,11 +776,14 @@ export function buildHouseParts(m: Model, d: HouseDims, openings: Opening[]): Bu
       }
     }
 
-    // Sloped gable / shed roof tenons
+    // Sloped gable / shed roof tenons (splice split nodes directly onto the unioned wall outline)
     for (const sj of s.slopeJoints) {
+      const splitDists = sj.spans.flatMap((sp) => [sp.a, sp.b]);
+      const spliced = spliceSegment(parts[s.key][0], sj.a, sj.b, splitDists);
+      parts[s.key] = [spliced.sub, ...parts[s.key].slice(1)];
       for (const sp of sj.spans) {
-        const pa = alongSeg(sj.a, sj.b, sp.a);
-        const pb = alongSeg(sj.a, sj.b, sp.b);
+        const pa = alongSeg(spliced.a, spliced.b, sp.a);
+        const pb = alongSeg(spliced.a, spliced.b, sp.b);
         parts = roofTenonInto(
           parts,
           opts({ kind: 'tenon', tenonCount: 1, tenonWidth: sp.width }),
@@ -881,6 +907,8 @@ export function buildHouseParts(m: Model, d: HouseDims, openings: Opening[]): Bu
 
   // 9. Cut doors & windows and add engraved frame marks on outer walls & interior walls (BEFORE centering!)
   const hosts = houseWallHosts(m, d);
+  const sillZ = sillBaseZ(d.floor, t);
+  const threshold = sillZ - floorZ;
   for (const s of setups.values()) {
     const wallOps = openings.filter((o) => o.wall === s.key);
     if (!wallOps.length) continue;
@@ -889,7 +917,7 @@ export function buildHouseParts(m: Model, d: HouseDims, openings: Opening[]): Bu
     const wallMarks: SubPath[] = [];
     for (const op of wallOps) {
       const cx = flipX ? s.L - op.x : op.x;
-      const yBot = s.topZ - (floorZ + op.y);
+      const yBot = s.topZ - (sillZ + op.y);
       const cutThrough = !d.floor && op.y <= 0.01;
       cuts.push(...openingCutouts(op, cx, yBot, d.mullionWidth, cutThrough));
       if (d.engraveFrames) wallMarks.push(...openingMarks(op, cx, yBot, d.frameWidth));
@@ -904,7 +932,7 @@ export function buildHouseParts(m: Model, d: HouseDims, openings: Opening[]): Bu
     const cuts: SubPath[] = [];
     const wallMarks: SubPath[] = [];
     for (const op of wallOps) {
-      const yBot = p.h - op.y;
+      const yBot = p.h - (threshold + op.y);
       const cutThrough = !d.floor && op.y <= 0.01;
       cuts.push(...openingCutouts(op, op.x, yBot, d.mullionWidth, cutThrough));
       if (d.engraveFrames) wallMarks.push(...openingMarks(op, op.x, yBot, d.frameWidth));
@@ -1235,6 +1263,7 @@ function shapedHouseParts(m: Model, d: HouseDims, openings: Opening[]): BuiltHou
     }
 
   // Cut interior-wall openings on standalone inner walls
+  const shapedThreshold = sillBaseZ(d.floor, t) - floorZ;
   for (const p of walls) {
     if (memberIds.has(p.it.wall.id)) continue;
     const wallOps = openings.filter((o) => o.wall === p.key);
@@ -1242,7 +1271,7 @@ function shapedHouseParts(m: Model, d: HouseDims, openings: Opening[]): BuiltHou
     const cuts: SubPath[] = [];
     const wallMarks: SubPath[] = [];
     for (const op of wallOps) {
-      const yBot = p.h - op.y;
+      const yBot = p.h - (shapedThreshold + op.y);
       const cutThrough = !d.floor && op.y <= 0.01;
       cuts.push(...openingCutouts(op, op.x, yBot, d.mullionWidth, cutThrough));
       if (d.engraveFrames) wallMarks.push(...openingMarks(op, op.x, yBot, d.frameWidth));
@@ -1268,8 +1297,8 @@ function shapedHouseParts(m: Model, d: HouseDims, openings: Opening[]): BuiltHou
       for (const op of openings.filter((o) => o.wall === wk)) {
         const panelX = (sp.flipX ? sp.len - op.x : op.x) - t;
         const bx = panelX - b.bs;
-        if (bx - op.w / 2 > t && bx + op.w / 2 < b.be - b.bs - t && op.y + op.h < ho - t) {
-          const yBot = ho - op.y;
+        if (bx - op.w / 2 > t && bx + op.w / 2 < b.be - b.bs - t && shapedThreshold + op.y + op.h < ho - t) {
+          const yBot = ho - (shapedThreshold + op.y);
           const cutThrough = !d.floor && op.y <= 0.01;
           cuts.push(...openingCutouts(op, bx, yBot, d.mullionWidth, cutThrough));
           if (d.engraveFrames) bMarks.push(...openingMarks(op, bx, yBot, d.frameWidth));
