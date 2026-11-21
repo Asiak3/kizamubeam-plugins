@@ -39,8 +39,10 @@ export interface OpeningIssue {
 export interface WallHost {
   key: string;
   width: number;
-  /** Interior floor elevation (t if floor enabled, 0 otherwise) */
+  /** Interior floor top elevation (t if floor enabled, 0 otherwise) */
   floorZ: number;
+  /** Lowest valid cutout Z: floorZ + solid threshold when floor is enabled (keeps floor finger joints intact), 0 when floor is off */
+  sillZ: number;
   /** Top height Z(x) in exterior coordinates x ∈ [0, width] */
   zAt: (x: number) => number;
   maxZ: number;
@@ -57,6 +59,12 @@ export const MAX_OPENINGS = 80;
 const MAX_TEXT = 100_000;
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
+/** Minimum horizontal and vertical web between openings and wall boundaries */
+export const webMin = (t: number) => Math.max(2, t);
+
+/** Lowest valid cutout Z on a wall: above floor plate + solid threshold when floor is on, 0 when floor is off */
+export const sillBaseZ = (floor: boolean, t: number) => (floor ? t + webMin(t) : 0);
+
 export const isOuterWall = (w: string): w is OuterWallKey => (OUTER_WALLS as string[]).includes(w);
 
 /** Default openings for a brand-new 120 × 90 × 70 mm house: front door + balanced windows on all four walls */
@@ -65,26 +73,27 @@ export function defaultOpenings(W = 120, D = 90, H = 70, t = 3): Opening[] {
 }
 
 /** Generate a balanced classic house facade (front door + symmetrically placed windows) scaled to W × D × H */
-export function classicFacadePreset(W: number, D: number, H: number, t: number): Opening[] {
-  const clearH = Math.max(12, H - 2 * t);
+export function classicFacadePreset(W: number, D: number, H: number, t: number, floor = true): Opening[] {
+  const sillZ = sillBaseZ(floor, t);
+  const clearH = Math.max(12, H - sillZ - webMin(t));
   const out: Opening[] = [];
   let id = 1;
   const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
   // Front door centered on front wall
   const dw = r2(clamp(W * 0.18, 12, Math.min(36, W - 4 * t)));
-  const dh = r2(clamp(clearH * 0.65, 16, Math.max(16, clearH - 2 * t)));
-  const canDoor = dw >= 10 && dh >= 12 && W >= dw + 4 * t && clearH >= dh + t + 2;
+  const dh = r2(clamp(clearH * 0.66, 16, Math.max(16, clearH - t)));
+  const canDoor = dw >= 10 && dh >= 12 && W >= dw + 4 * t && clearH >= dh + 2;
   if (canDoor) {
     out.push({ id: id++, wall: 'front', kind: 'door', style: 'rect', x: r2(W / 2), y: 0, w: dw, h: dh });
   }
 
   // Front flanking windows if enough room beside the door
   const ww = r2(clamp(W * 0.15, 10, 26));
-  const wh = r2(clamp(clearH * 0.34, 10, Math.min(28, clearH - 3 * t)));
-  const wy = r2(clamp(clearH * 0.3, 4, Math.max(4, clearH - wh - t - 3)));
+  const wh = r2(clamp(clearH * 0.34, 10, Math.min(28, clearH - 2 * t)));
+  const wy = r2(clamp(clearH * 0.28, 4, Math.max(4, clearH - wh - t - 1)));
   const sideSpace = (W - (canDoor ? dw : 0)) / 2 - 2 * t;
-  if (canDoor && sideSpace >= ww + 2 * t && wh >= 8 && wy + wh <= clearH - t - 1) {
+  if (canDoor && sideSpace >= ww + 2 * t && wh >= 8 && wy + wh <= clearH - t) {
     const leftX = r2(t + (W / 2 - dw / 2 - t) / 2);
     const rightX = r2(W - leftX);
     out.push({ id: id++, wall: 'front', kind: 'window', style: 'cross', x: leftX, y: wy, w: ww, h: wh });
@@ -92,7 +101,7 @@ export function classicFacadePreset(W: number, D: number, H: number, t: number):
   }
 
   // Back wall: 1 or 2 windows
-  if (W >= ww + 4 * t && wh >= 8 && wy + wh <= clearH - t - 1) {
+  if (W >= ww + 4 * t && wh >= 8 && wy + wh <= clearH - t) {
     if (W >= 2 * ww + 7 * t) {
       out.push({ id: id++, wall: 'back', kind: 'window', style: 'cross', x: r2(W * 0.3), y: wy, w: ww, h: wh });
       out.push({ id: id++, wall: 'back', kind: 'window', style: 'cross', x: r2(W * 0.7), y: wy, w: ww, h: wh });
@@ -103,7 +112,7 @@ export function classicFacadePreset(W: number, D: number, H: number, t: number):
 
   // Left & Right walls: 1 centered window each
   const sw = r2(clamp(D * 0.2, 10, Math.min(24, D - 4 * t)));
-  if (D >= sw + 4 * t && wh >= 8 && wy + wh <= clearH - t - 1) {
+  if (D >= sw + 4 * t && wh >= 8 && wy + wh <= clearH - t) {
     out.push({ id: id++, wall: 'left', kind: 'window', style: 'cross', x: r2(D / 2), y: wy, w: sw, h: wh });
     out.push({ id: id++, wall: 'right', kind: 'window', style: 'cross', x: r2(D / 2), y: wy, w: sw, h: wh });
   }
@@ -187,6 +196,7 @@ export function nextOpeningId(list: Opening[]): number {
 export function outerWallHost(
   profile: WallProfile,
   floorZ: number,
+  sillZ: number,
   t: number,
   hasLeftAdj: boolean,
   hasRightAdj: boolean,
@@ -197,6 +207,7 @@ export function outerWallHost(
     key: profile.wall,
     width: profile.width,
     floorZ,
+    sillZ,
     zAt: profile.zAt,
     maxZ: profile.maxZ,
     jointXs,
@@ -206,27 +217,24 @@ export function outerWallHost(
   };
 }
 
-/** Minimum horizontal and vertical web between openings and wall boundaries */
-const webMin = (t: number) => Math.max(2, t);
-
 /** Sample the maximum allowable Z of the top of an opening of width w centered at x (accounting for arch/round curvature) */
-function openingTopNeededZ(op: Opening, xSample: number, floorZ: number): number {
+function openingTopNeededZ(op: Opening, xSample: number, sillZ: number): number {
   const dx = Math.abs(xSample - op.x);
   const hw = op.w / 2;
   if (op.style === 'round') {
     const r = Math.min(op.w, op.h) / 2;
-    const cy = floorZ + op.y + op.h / 2;
-    return dx <= r ? cy + Math.sqrt(Math.max(0, r * r - dx * dx)) : floorZ + op.y;
+    const cy = sillZ + op.y + op.h / 2;
+    return dx <= r ? cy + Math.sqrt(Math.max(0, r * r - dx * dx)) : sillZ + op.y;
   }
   if (op.style === 'arch') {
     const r = Math.min(op.w / 2, op.h / 2);
-    const cy = floorZ + op.y + op.h - r;
+    const cy = sillZ + op.y + op.h - r;
     const straightHalf = hw - r;
-    if (dx <= straightHalf) return floorZ + op.y + op.h;
+    if (dx <= straightHalf) return sillZ + op.y + op.h;
     const u = dx - straightHalf;
-    return u <= r ? cy + Math.sqrt(Math.max(0, r * r - u * u)) : floorZ + op.y;
+    return u <= r ? cy + Math.sqrt(Math.max(0, r * r - u * u)) : sillZ + op.y;
   }
-  return floorZ + op.y + op.h;
+  return sillZ + op.y + op.h;
 }
 
 /** Validate all openings against their host walls, roof silhouettes, joints, and overlaps */
@@ -271,7 +279,7 @@ export function validateOpenings(openings: Opening[], hosts: Map<string, WallHos
       continue;
     }
 
-    // Bottom clearance: doors may sit at y = 0 (at interior floor top); windows above 0
+    // Bottom clearance: y >= 0 sits on sillZ (solid threshold above floor joint when floor is on, or bottom edge when off)
     if (op.y < -0.01) {
       issues.push({ key: 'openings', level: 'error', code: 'opening-outside', values: { id: op.id } });
       continue;
@@ -283,7 +291,7 @@ export function validateOpenings(openings: Opening[], hosts: Map<string, WallHos
     let hitsTop = false;
     for (let i = 0; i <= samples; i++) {
       const sx = xL + (op.w * i) / samples;
-      const needZ = openingTopNeededZ(op, sx, host.floorZ);
+      const needZ = openingTopNeededZ(op, sx, host.sillZ);
       const availZ = host.zAt(sx) - topMargin;
       if (needZ > availZ + 0.01) {
         hitsTop = true;
@@ -523,7 +531,7 @@ export function findOpeningSpot(
 ): Opening | null {
   const web = webMin(t);
   const availW = host.width - host.marginLeft - host.marginRight - 2 * web;
-  const clearH = host.zAt(host.width / 2) - host.floorZ - host.topJointMargin - web;
+  const clearH = host.zAt(host.width / 2) - host.sillZ - host.topJointMargin - web;
   if (availW < 6 || clearH < 6) return null;
 
   const isDoor = kind === 'door';
@@ -578,6 +586,7 @@ export function buildWallHosts(
 ): Map<string, WallHost> {
   const hosts = new Map<string, WallHost>();
   const floorZ = floor ? t : 0;
+  const sillZ = sillBaseZ(floor, t);
   const sideOn: Record<OuterWallKey, boolean> = { front: sides.y1, back: sides.y0, left: sides.x0, right: sides.x1 };
   const adjLeft: Record<OuterWallKey, boolean> = { front: sides.x0, back: sides.x1, left: sides.y0, right: sides.y1 };
   const adjRight: Record<OuterWallKey, boolean> = { front: sides.x1, back: sides.x0, left: sides.y1, right: sides.y0 };
@@ -605,7 +614,7 @@ export function buildWallHosts(
         (roof.type === 'shed' && prof.kind === 'shed-slope'));
     hosts.set(
       wall,
-      outerWallHost(prof, floorZ, t, adjLeft[wall], adjRight[wall], hasTopJoint ? t : 0, outerJoints[wall]),
+      outerWallHost(prof, floorZ, sillZ, t, adjLeft[wall], adjRight[wall], hasTopJoint ? t : 0, outerJoints[wall]),
     );
   }
 
@@ -617,6 +626,7 @@ export function buildWallHosts(
       key: `wall-${iw.id}`,
       width: len,
       floorZ,
+      sillZ,
       zAt: () => floorZ + iw.h,
       maxZ: floorZ + iw.h,
       jointXs: iw.joints.map((a) => a - iw.s),

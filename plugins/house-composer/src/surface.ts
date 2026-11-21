@@ -310,6 +310,7 @@ function elevationDraw(ctx: HouseSurfaceCtx, s: Surface): Drawing {
   const L = host.width;
   const maxZ = host.maxZ;
   const floorZ = host.floorZ;
+  const sillZ = host.sillZ;
   const padX = Math.max(18, L * 0.14);
   const padY = Math.max(16, maxZ * 0.16);
   const items: Item[] = [];
@@ -322,10 +323,14 @@ function elevationDraw(ctx: HouseSurfaceCtx, s: Surface): Drawing {
   const wallPoly: [number, number][] = [...topPts, [L, maxZ], [0, maxZ]];
   items.push({ type: 'line', pts: wallPoly, closed: true, style: 'normal', width: 2 });
 
-  // 2. Floor band at bottom (Z = 0..t)
+  // 2. Floor band at bottom (Z = 0..t) and solid threshold line (Z = sillZ)
   if (floorZ > 0) {
     const yf = maxZ - floorZ;
     items.push({ type: 'line', pts: [[0, yf], [L, yf]], style: 'muted', width: 1, dash: true, alpha: 0.7 });
+  }
+  if (sillZ > floorZ) {
+    const ys = maxZ - sillZ;
+    items.push({ type: 'line', pts: [[0, ys], [L, ys]], style: 'muted', width: 0.8, dash: true, alpha: 0.4 });
   }
 
   // 3. Eaves reference line when wall rises above H (gable / shed)
@@ -371,12 +376,12 @@ function elevationDraw(ctx: HouseSurfaceCtx, s: Surface): Drawing {
   // 7. Doors & windows on this wall (unselected first, selected on top)
   for (const op of wallOps) {
     if (op.id === sel?.id) continue;
-    items.push(...openingElevationItems(op, maxZ, floorZ, false, ctx.mullionWidth, ctx.engraveFrames, ctx.frameWidth));
+    items.push(...openingElevationItems(op, maxZ, sillZ, false, ctx.mullionWidth, ctx.engraveFrames, ctx.frameWidth));
   }
   if (sel) {
-    items.push(...openingElevationItems(sel, maxZ, floorZ, true, ctx.mullionWidth, ctx.engraveFrames, ctx.frameWidth));
+    items.push(...openingElevationItems(sel, maxZ, sillZ, true, ctx.mullionWidth, ctx.engraveFrames, ctx.frameWidth));
     // Dimension lines for the selected opening
-    const yBot = maxZ - (floorZ + sel.y);
+    const yBot = maxZ - (sillZ + sel.y);
     const yTop = yBot - sel.h;
     const xL = sel.x - sel.w / 2;
     const xR = sel.x + sel.w / 2;
@@ -399,12 +404,12 @@ function elevationDraw(ctx: HouseSurfaceCtx, s: Surface): Drawing {
       align: 'center',
       bubble: true,
     });
-    // Sill height (for windows above floor)
+    // Sill height (for windows above threshold)
     if (sel.y > 0.5) {
-      const yFloor = maxZ - floorZ;
+      const ySill = maxZ - sillZ;
       items.push(
-        { type: 'line', pts: [[sel.x, yBot], [sel.x, yFloor]], style: 'accent', width: 0.8, dash: true, alpha: 0.65 },
-        { type: 'text', x: sel.x, y: (yBot + yFloor) / 2, text: `${mm(r1(sel.y))}`, style: 'accent', align: 'center', bubble: true },
+        { type: 'line', pts: [[sel.x, yBot], [sel.x, ySill]], style: 'accent', width: 0.8, dash: true, alpha: 0.65 },
+        { type: 'text', x: sel.x, y: (yBot + ySill) / 2, text: `${mm(r1(sel.y))}`, style: 'accent', align: 'center', bubble: true },
       );
     }
   }
@@ -413,9 +418,9 @@ function elevationDraw(ctx: HouseSurfaceCtx, s: Surface): Drawing {
   const fields: Drawing['fields'] = sel
     ? [
         { id: 'ox', label: { code: 'field.ox' }, value: r2(sel.x), min: 1, max: L - 1 },
-        { id: 'oy', label: { code: 'field.oy' }, value: r2(sel.y), min: 0, max: Math.max(0, maxZ - floorZ - 4) },
+        { id: 'oy', label: { code: 'field.oy' }, value: r2(sel.y), min: 0, max: Math.max(0, maxZ - sillZ - 4) },
         { id: 'ow', label: { code: 'field.ow' }, value: r2(sel.w), min: 4, max: L },
-        { id: 'oh', label: { code: 'field.oh' }, value: r2(sel.h), min: 4, max: Math.max(4, maxZ - floorZ) },
+        { id: 'oh', label: { code: 'field.oh' }, value: r2(sel.h), min: 4, max: Math.max(4, maxZ - sillZ) },
       ]
     : undefined;
 
@@ -455,8 +460,8 @@ function clampOpeningToHost(op: Opening, host: WallHost, t: number): Opening {
   const maxX = host.width - host.marginRight - web - op.w / 2;
   const x = minX <= maxX ? Math.max(minX, Math.min(maxX, op.x)) : host.width / 2;
   const maxTop = host.zAt(x) - host.topJointMargin - web;
-  const maxY = Math.max(0, maxTop - host.floorZ - op.h);
-  const y = op.kind === 'door' ? Math.max(0, Math.min(maxY, op.y)) : Math.max(0, Math.min(maxY, op.y));
+  const maxY = Math.max(0, maxTop - host.sillZ - op.h);
+  const y = Math.max(0, Math.min(maxY, op.y));
   return { ...op, x: r2(x), y: r2(y), w: r2(op.w), h: r2(op.h) };
 }
 
@@ -476,7 +481,7 @@ function elevationPointer(ctx: HouseSurfaceCtx, ev: Pointer, s: Surface): EventR
   const st = elevStateOf(s.state);
   const base = st.openings ?? ctx.openings;
   const maxZ = host.maxZ;
-  const floorZ = host.floorZ;
+  const sillZ = host.sillZ;
   const snapDist = Math.max(2, ctx.t);
   const rowOf = (ops: Opening[], id: number | undefined) => (id === undefined ? -1 : ops.findIndex((o) => o.id === id));
 
@@ -574,14 +579,14 @@ function elevationPointer(ctx: HouseSurfaceCtx, ev: Pointer, s: Surface): EventR
     if (ev.hit) return null;
     if (ev.x < 0 || ev.x > host.width || ev.y < 0 || ev.y > maxZ) return null;
     const clickZ = maxZ - ev.y;
-    const clearH = Math.max(12, host.zAt(ev.x) - floorZ - host.topJointMargin - Math.max(2, ctx.t));
-    const nearFloor = clickZ <= floorZ + clearH * 0.25;
+    const clearH = Math.max(12, host.zAt(ev.x) - sillZ - host.topJointMargin - Math.max(2, ctx.t));
+    const nearFloor = clickZ <= sillZ + clearH * 0.25;
     const isDoor = !!ev.shift || nearFloor;
     const w = isDoor ? Math.min(22, Math.max(8, host.width * 0.22)) : Math.min(18, Math.max(8, host.width * 0.18));
     const h = isDoor ? Math.min(40, Math.max(12, clearH * 0.7)) : Math.min(20, Math.max(8, clearH * 0.38));
     const others = base.filter((o) => o.wall === wk);
     const sx = snapX(ev.x, host, others, snapDist);
-    const sy = isDoor ? 0 : snapY(Math.max(2, clickZ - floorZ - h / 2), h, others, snapDist);
+    const sy = isDoor ? 0 : snapY(Math.max(2, clickZ - sillZ - h / 2), h, others, snapDist);
     const created = clampOpeningToHost(
       { id: nextOpeningId(base), wall: wk, kind: isDoor ? 'door' : 'window', style: isDoor ? 'rect' : 'cross', x: sx, y: sy, w: r1(w), h: r1(h) },
       host,

@@ -295,7 +295,7 @@
         {
           "key": "openings",
           "type": "data",
-          "def": "[{\"id\":1,\"wall\":\"front\",\"kind\":\"door\",\"style\":\"rect\",\"x\":60,\"y\":0,\"w\":22,\"h\":40},{\"id\":2,\"wall\":\"front\",\"kind\":\"window\",\"style\":\"cross\",\"x\":26,\"y\":20,\"w\":18,\"h\":20},{\"id\":3,\"wall\":\"front\",\"kind\":\"window\",\"style\":\"cross\",\"x\":94,\"y\":20,\"w\":18,\"h\":20},{\"id\":4,\"wall\":\"back\",\"kind\":\"window\",\"style\":\"cross\",\"x\":36,\"y\":20,\"w\":18,\"h\":20},{\"id\":5,\"wall\":\"back\",\"kind\":\"window\",\"style\":\"cross\",\"x\":84,\"y\":20,\"w\":18,\"h\":20},{\"id\":6,\"wall\":\"left\",\"kind\":\"window\",\"style\":\"cross\",\"x\":45,\"y\":20,\"w\":18,\"h\":20},{\"id\":7,\"wall\":\"right\",\"kind\":\"window\",\"style\":\"cross\",\"x\":45,\"y\":20,\"w\":18,\"h\":20}]",
+          "def": "[{\"id\":1,\"wall\":\"front\",\"kind\":\"door\",\"style\":\"rect\",\"x\":60,\"y\":0,\"w\":22,\"h\":40},{\"id\":2,\"wall\":\"front\",\"kind\":\"window\",\"style\":\"cross\",\"x\":26,\"y\":16,\"w\":18,\"h\":20},{\"id\":3,\"wall\":\"front\",\"kind\":\"window\",\"style\":\"cross\",\"x\":94,\"y\":16,\"w\":18,\"h\":20},{\"id\":4,\"wall\":\"back\",\"kind\":\"window\",\"style\":\"cross\",\"x\":36,\"y\":16,\"w\":18,\"h\":20},{\"id\":5,\"wall\":\"back\",\"kind\":\"window\",\"style\":\"cross\",\"x\":84,\"y\":16,\"w\":18,\"h\":20},{\"id\":6,\"wall\":\"left\",\"kind\":\"window\",\"style\":\"cross\",\"x\":45,\"y\":16,\"w\":18,\"h\":20},{\"id\":7,\"wall\":\"right\",\"kind\":\"window\",\"style\":\"cross\",\"x\":45,\"y\":16,\"w\":18,\"h\":20}]",
           "resetOnNew": true
         },
         { "key": "walls", "type": "data", "def": "[]", "resetOnNew": true },

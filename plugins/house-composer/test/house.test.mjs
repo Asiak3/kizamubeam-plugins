@@ -12,7 +12,102 @@ const manifest = JSON.parse(readFileSync(resolve(pluginDir, 'plugin.json'), 'utf
 const spec = manifest.plugins[0];
 const bundleCode = readFileSync(resolve(pluginDir, 'dist/plugin.js'), 'utf8');
 
-/** Faithful mock of KizamuBeam's host functions so the real bundled plugin executes end-to-end in Node */
+/** Signed area of a closed polygon (> 0 = CW in y-down screen coords, < 0 = CCW) */
+function signedArea(pts) {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i],
+      q = pts[(i + 1) % pts.length];
+    a += p.x * q.y - q.x * p.y;
+  }
+  return a / 2;
+}
+
+/** Exact port of KizamuBeam's checkGeom thin-web / web-cut detector (minWeb=1, beam=0.15, tol=0.05) */
+function checkWebsOnPart(subs, { minWeb = 1, beam = 0.15, tol = 0.05, kerf = 0 } = {}) {
+  const findings = [];
+  const reach = minWeb + beam + 0.1;
+  const contours = subs.map((sp, sub) => {
+    const pts = [...sp.nodes, sp.nodes[0]];
+    const cum = [0];
+    for (let i = 0; i < sp.nodes.length; i++) {
+      cum.push(cum[i] + Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y));
+    }
+    return { sub, pts, cum, len: cum[cum.length - 1], area: signedArea(sp.nodes) };
+  });
+  // Nesting depth: outer contour = 0 (material inside), holes = 1 (material outside)
+  const pip = (pt, poly) => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 2; i < poly.length - 1; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+      if ((yi > pt.y) !== (yj > pt.y) && pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+  const depth = contours.map((c, ci) => contours.filter((o, oi) => oi !== ci && pip(c.pts[0], o.pts)).length);
+  const acc = new Map();
+
+  contours.forEach((c, ci) => {
+    const materialInside = depth[ci] % 2 === 0;
+    // In y-down coords, signedArea > 0 means CW -> inward normal is (-dy, dx)
+    const sign = (c.area > 0 ? 1 : -1) * (materialInside ? 1 : -1);
+    const n = Math.max(1, Math.round(c.len / 0.2));
+    const st = c.len / n;
+    const hits = [];
+    let segIdx = 0;
+    for (let k = 0; k < n; k++) {
+      const at = (k + 0.5) * st;
+      while (segIdx + 2 < c.cum.length && c.cum[segIdx + 1] < at) segIdx++;
+      const p0 = c.pts[segIdx], p1 = c.pts[segIdx + 1];
+      const l = c.cum[segIdx + 1] - c.cum[segIdx] || 1e-12;
+      const f = (at - c.cum[segIdx]) / l;
+      const pa = { x: p0.x + (p1.x - p0.x) * f, y: p0.y + (p1.y - p0.y) * f };
+      const dx = (p1.x - p0.x) / l, dy = (p1.y - p0.y) / l;
+      const nx = -dy * sign, ny = dx * sign;
+      let best = null;
+      for (const o of contours) {
+        for (let j = 0; j < o.pts.length - 1; j++) {
+          const a = o.pts[j], b = o.pts[j + 1];
+          const bx = b.x - a.x, by = b.y - a.y;
+          const den = nx * by - ny * bx;
+          if (Math.abs(den) < 1e-12) continue;
+          const wx = a.x - pa.x, wy = a.y - pa.y;
+          const u = (wx * by - wy * bx) / den;
+          const v = (wx * ny - wy * nx) / den;
+          if (v < 0 || v > 1 || u <= tol || u > reach) continue;
+          if (!best || u < best.d) best = { d: u, oi: o.sub };
+        }
+      }
+      if (!best) hits.push(null);
+      else {
+        const w = best.d - beam + 2 * kerf;
+        hits.push(w < minWeb ? { ...best, w } : null);
+      }
+    }
+    // Group contiguous hit runs >= 0.4 mm
+    let i = 0;
+    while (i < hits.length) {
+      if (!hits[i]) { i++; continue; }
+      let j = i;
+      while (j + 1 < hits.length && hits[j + 1]) j++;
+      if ((j - i + 1) * st >= 0.4 && j > i) {
+        const mid = hits[Math.floor((i + j) / 2)];
+        const [x, y] = [c.sub, mid.oi].sort((a, b) => a - b);
+        const key = `${x}:${y}`;
+        let minW = acc.get(key) ?? Infinity;
+        for (let k = i; k <= j; k++) minW = Math.min(minW, hits[k].w);
+        acc.set(key, minW);
+      }
+      i = j + 1;
+    }
+  });
+  for (const [k, w] of acc.entries()) {
+    findings.push({ level: w <= 0 ? 'error' : 'warn', code: w <= 0 ? 'check-web-cut' : 'check-web', values: { w }, pair: k });
+  }
+  return findings;
+}
+
+/** Faithful mock of KizamuBeam's host functions (including real finger-joint profiles, gable/shed cap union & checkGeom) */
 function createMockHost({ material = null, workArea = { width: 400, height: 300 } } = {}) {
   const jointCalls = [];
   const host = {
@@ -36,7 +131,6 @@ function createMockHost({ material = null, workArea = { width: 400, height: 300 
         for (const [k, subs] of Object.entries(input.parts)) {
           out[k] = subs.map((sp) => ({ closed: sp.closed, nodes: sp.nodes.map((n) => ({ ...n })) }));
         }
-        // Validate every edge segment index exists and is non-degenerate (just like hostJoints.ts!)
         for (const e of input.edges) {
           const subs = out[e.part];
           assert.ok(subs, `Missing part ${e.part}`);
@@ -49,7 +143,37 @@ function createMockHost({ material = null, workArea = { width: 400, height: 300 
           const len = Math.hypot(b.x - a.x, b.y - a.y);
           assert.ok(len > 1e-5, `Degenerate segment on ${e.part} seg=${e.seg}`);
         }
-        // When the second part is a single open guide line (tenonsInto), replace it with a slot rectangle along the guide
+        // Generate real outward finger profiles so corner fingers & web checks match KizamuBeam!
+        if (input.options.kind === 'finger' && input.options.direction === 'out' && input.edges.length === 2) {
+          const th = input.options.thickness ?? 3;
+          const fw = input.options.fingerWidth ?? 10;
+          input.edges.forEach((e, idx) => {
+            const sp = out[e.part][e.sub ?? 0];
+            const ns = sp.nodes;
+            const n = ns.length;
+            const a = ns[e.seg], b = ns[(e.seg + 1) % n];
+            const len = Math.hypot(b.x - a.x, b.y - a.y);
+            const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+            // Outward normal: for CW polygon (area > 0 in y-down), outward is (uy, -ux)
+            const sgn = signedArea(ns) > 0 ? 1 : -1;
+            const ox = uy * sgn, oy = -ux * sgn;
+            let count = Math.round(len / Math.max(0.1, fw));
+            if (count % 2 === 0) count += len / fw >= count ? 1 : -1;
+            count = Math.max(3, count);
+            const w = len / count;
+            const phase = idx === 0 ? 0 : 1;
+            const mat = (i) => (i + phase) % 2 === 0;
+            const pt = (u, v) => ({ x: a.x + ux * u + ox * v, y: a.y + uy * u + oy * v });
+            const extra = [];
+            if (mat(0)) extra.push(pt(0, th));
+            for (let i = 1; i < count; i++) {
+              const u = i * w;
+              extra.push(pt(u, mat(i - 1) ? th : 0), pt(u, mat(i) ? th : 0));
+            }
+            if (mat(count - 1)) extra.push(pt(len, th));
+            sp.nodes = [...ns.slice(0, e.seg + 1), ...extra, ...ns.slice(e.seg + 1)];
+          });
+        }
         if (input.options.kind === 'tenon' && input.edges.length === 2) {
           const gKey = input.edges[1].part;
           const gSub = out[gKey][0];
@@ -85,8 +209,38 @@ function createMockHost({ material = null, workArea = { width: 400, height: 300 
       throw new Error('host-bad-input');
     },
     boolean({ op, a, b }) {
-      if (op === 'difference') return [...a, ...(b ?? [])];
-      if (op === 'union') return [...a];
+      if (op === 'difference') {
+        // Keep interior hole cutouts as holes; boundary-crossing edge notches (extending past outer bbox) merge into perimeter in real Clipper
+        const aNodes = a[0]?.nodes ?? [];
+        let ax0 = Infinity, ax1 = -Infinity, ay0 = Infinity, ay1 = -Infinity;
+        for (const n of aNodes) (ax0 = Math.min(ax0, n.x)), (ax1 = Math.max(ax1, n.x)), (ay0 = Math.min(ay0, n.y)), (ay1 = Math.max(ay1, n.y));
+        const interior = (b ?? []).filter((sp) => {
+          const xs = sp.nodes.map((n) => n.x), ys = sp.nodes.map((n) => n.y);
+          return Math.min(...xs) > ax0 + 0.01 && Math.max(...xs) < ax1 - 0.01 && Math.min(...ys) > ay0 + 0.01 && Math.max(...ys) < ay1 - 0.01;
+        });
+        return [...a, ...interior];
+      }
+      if (op === 'union' && a.length === 1 && b && b.length === 1) {
+        // Handle gable / shed cap union cleanly on top of the finger-jointed wall base!
+        const base = a[0].nodes;
+        const cap = b[0].nodes;
+        const capMinY = Math.min(...cap.map((n) => n.y));
+        const baseMinY = Math.min(...base.map((n) => n.y));
+        if (capMinY < baseMinY - 0.5) {
+          // Cap polygons always start with (minX, yL+ov), then trace the upper roof silhouette left→right, ending at (maxX, yR+ov)
+          const minX = Math.min(...cap.map((n) => n.x));
+          const maxX = Math.max(...cap.map((n) => n.x));
+          const i0 = cap.findIndex((n, idx) => idx > 0 && Math.abs(n.x - minX) < 1e-4);
+          const i1 = cap.findIndex((n, idx) => idx > i0 && Math.abs(n.x - maxX) < 1e-4);
+          const topCap = i0 >= 0 && i1 > i0 ? cap.slice(i0, i1 + 1) : cap.slice(1, 4);
+          const startIdx = base.findIndex((n) => Math.abs(n.x - maxX) < 1e-3 && n.y > topCap[topCap.length - 1].y + 0.1);
+          const endIdx = base.length - 1 - [...base].reverse().findIndex((n) => Math.abs(n.x - minX) < 1e-3 && n.y > topCap[0].y + 0.1);
+          if (startIdx >= 0 && endIdx >= startIdx) {
+            return [{ closed: true, nodes: [...topCap, ...base.slice(startIdx, endIdx + 1)] }];
+          }
+        }
+        return [...a];
+      }
       return [...a];
     },
     offset({ subs }) {
@@ -104,8 +258,14 @@ function createMockHost({ material = null, workArea = { width: 400, height: 300 
         return pos;
       });
     },
-    check() {
-      return [];
+    check({ parts, kerf = 0 }) {
+      const out = [];
+      for (const p of parts) {
+        for (const f of checkWebsOnPart(p.subs, { kerf })) {
+          out.push({ ...f, parts: [p.key] });
+        }
+      }
+      return out;
     },
     progress() {},
   };
